@@ -9,7 +9,7 @@ const app = express();
 
 app.use(
   cors({
-    origin: ["http://localhost:5173", "https://storza-client.vercel.app/"],
+    origin: ["http://localhost:5173", "https://storza-client.vercel.app"],
     credentials: true,
   }),
 );
