@@ -10,6 +10,7 @@ mongoose
   .connect(process.env.MONGO_URI as string)
   .then(() => {
     console.log("MongoDB Connected");
+    console.log("MONGO_URI:", process.env.MONGO_URI);
     app.listen(PORT, () => {
       console.log(`Server running on port ${PORT}`);
     });
