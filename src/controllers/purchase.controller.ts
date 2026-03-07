@@ -13,6 +13,8 @@ export const createPurchase = async (req: Request, res: Response) => {
       return res.status(400).json({ message: "Purchase items required" });
     }
 
+    let subtotal = 0;
+    let totalGST = 0;
     let totalAmount = 0;
 
     // create purchase
@@ -20,14 +22,30 @@ export const createPurchase = async (req: Request, res: Response) => {
       supplierName,
       paymentMethod,
       storeId,
+      subtotal: 0,
+      gstAmount: 0,
+      cgst: 0,
+      sgst: 0,
       totalAmount: 0,
     });
 
     for (const item of items) {
       const { productId, quantity, buyPrice } = item;
 
-      const total = quantity * buyPrice;
+      const product = await Product.findById(productId);
 
+      if (!product) {
+        return res.status(404).json({ message: "Product not found" });
+      }
+
+      const gst = product.gst || 0;
+
+      const itemSubtotal = quantity * buyPrice;
+      const gstAmount = (itemSubtotal * gst) / 100;
+      const total = itemSubtotal + gstAmount;
+
+      subtotal += itemSubtotal;
+      totalGST += gstAmount;
       totalAmount += total;
 
       // save purchase item
@@ -36,16 +54,27 @@ export const createPurchase = async (req: Request, res: Response) => {
         productId,
         quantity,
         buyPrice,
+        subtotal: itemSubtotal,
+        gst,
+        gstAmount,
+        cgst: gstAmount / 2,
+        sgst: gstAmount / 2,
         total,
       });
 
-      // update product stock
+      // update stock
       await Product.findByIdAndUpdate(productId, {
         $inc: { quantity: quantity },
+        buyingPrice: buyPrice,
       });
     }
 
+    purchase.subtotal = subtotal;
+    purchase.gstAmount = totalGST;
+    purchase.cgst = totalGST / 2;
+    purchase.sgst = totalGST / 2;
     purchase.totalAmount = totalAmount;
+
     await purchase.save();
 
     res.status(201).json({
@@ -97,13 +126,34 @@ export const getPurchases = async (req: any, res: Response) => {
       });
     }
 
-    const purchases = await Purchase.find({ storeId: req.user.storeId });
+    const purchases = await Purchase.find({
+      storeId: req.user.storeId,
+    })
+      .sort({ createdAt: -1 })
+      .lean();
+
+    const purchasesWithItems = await Promise.all(
+      purchases.map(async (purchase: any) => {
+        const items = await PurchaseItem.find({
+          purchaseId: purchase._id,
+        })
+          .populate("productId", "name")
+          .lean();
+
+        return {
+          ...purchase,
+          items,
+        };
+      }),
+    );
 
     return res.status(200).json({
       success: true,
-      data: purchases,
+      data: purchasesWithItems,
     });
   } catch (error) {
+    console.error(error);
+
     return res.status(500).json({
       success: false,
       message: "Failed to fetch purchases",

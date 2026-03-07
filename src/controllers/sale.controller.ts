@@ -17,27 +17,39 @@ export const createSale = async (req: Request, res: Response) => {
 
     if (!items || items.length === 0) {
       return res.status(400).json({
+        success: false,
         message: "Sale items required",
       });
     }
 
     const invoiceNumber = generateInvoiceNumber();
 
+    /* CREATE SALE */
     const sale = new Sale({
       invoiceNumber,
       customerName,
       paymentMethod,
       storeId,
+      subtotal: 0,
+      gstAmount: 0,
+      cgst: 0,
+      sgst: 0,
       totalAmount: 0,
     });
 
     await sale.save({ session });
 
-    let totalAmount = 0;
+    let subtotal = 0;
+    let totalGST = 0;
+
     const saleItems: any[] = [];
 
     for (const item of items) {
       const { productId, quantity } = item;
+
+      if (!productId || quantity <= 0) {
+        throw new Error("Invalid sale item");
+      }
 
       const product = await Product.findById(productId).session(session);
 
@@ -50,40 +62,60 @@ export const createSale = async (req: Request, res: Response) => {
       }
 
       const price = product.sellingPrice || 0;
-      const total = price * quantity;
+      const gst = product.gst || 0;
 
-      totalAmount += total;
+      const itemSubtotal = price * quantity;
+      const gstAmount = (itemSubtotal * gst) / 100;
+      const total = itemSubtotal + gstAmount;
+
+      subtotal += itemSubtotal;
+      totalGST += gstAmount;
 
       saleItems.push({
         saleId: sale._id,
         productId,
+        productName: product.name,
         quantity,
         price,
+        subtotal: itemSubtotal,
+        gst,
+        gstAmount,
+        cgst: gstAmount / 2,
+        sgst: gstAmount / 2,
         total,
       });
 
+      /* REDUCE PRODUCT STOCK */
       product.quantity -= quantity;
       await product.save({ session });
     }
 
+    /* INSERT SALE ITEMS */
     await SaleItem.insertMany(saleItems, { session });
 
-    sale.totalAmount = totalAmount;
+    const grandTotal = subtotal + totalGST;
+
+    sale.subtotal = subtotal;
+    sale.gstAmount = totalGST;
+    sale.cgst = totalGST / 2;
+    sale.sgst = totalGST / 2;
+    sale.totalAmount = grandTotal;
+
     await sale.save({ session });
 
     await session.commitTransaction();
 
     res.status(201).json({
       success: true,
-      message: "Sale completed",
-      sale,
+      message: "Sale completed successfully",
+      data: sale,
     });
   } catch (error: any) {
     await session.abortTransaction();
 
     res.status(500).json({
       success: false,
-      message: error.message,
+      message: error.message || "Sale failed",
     });
   } finally {
     session.endSession();
@@ -92,15 +124,36 @@ export const createSale = async (req: Request, res: Response) => {
 
 export const getSales = async (req: any, res: Response) => {
   try {
+    const storeId = req.user.storeId;
+
     const sales = await Sale.find({
-      storeId: req.user.storeId,
-    }).sort({ createdAt: -1 });
+      storeId,
+    })
+      .sort({ createdAt: -1 })
+      .lean();
+
+    const salesWithItems = await Promise.all(
+      sales.map(async (sale: any) => {
+        const items = await SaleItem.find({
+          saleId: sale._id,
+        })
+          .populate("productId", "name")
+          .lean();
+
+        return {
+          ...sale,
+          items,
+        };
+      }),
+    );
 
     res.status(200).json({
       success: true,
-      data: sales,
+      data: salesWithItems,
     });
   } catch (error) {
+    console.error(error);
+
     res.status(500).json({
       message: "Failed to fetch sales",
     });

@@ -4,7 +4,14 @@ export interface ISale extends Document {
   invoiceNumber: string;
   customerName?: string;
   paymentMethod: string;
+
+  subtotal: number;
+  gstAmount: number;
+  cgst: number;
+  sgst: number;
+
   totalAmount: number;
+
   storeId: mongoose.Types.ObjectId;
 }
 
@@ -24,6 +31,26 @@ const saleSchema = new Schema<ISale>(
       type: String,
       enum: ["cash", "upi", "card", "credit"],
       default: "cash",
+    },
+
+    subtotal: {
+      type: Number,
+      default: 0,
+    },
+
+    gstAmount: {
+      type: Number,
+      default: 0,
+    },
+
+    cgst: {
+      type: Number,
+      default: 0,
+    },
+
+    sgst: {
+      type: Number,
+      default: 0,
     },
 
     totalAmount: {

@@ -3,8 +3,18 @@ import mongoose, { Schema, Document } from "mongoose";
 export interface ISaleItem extends Document {
   saleId: mongoose.Types.ObjectId;
   productId: mongoose.Types.ObjectId;
+
   quantity: number;
   price: number;
+
+  subtotal: number;
+
+  gst: number;
+  gstAmount: number;
+
+  cgst: number;
+  sgst: number;
+
   total: number;
 }
 
@@ -30,6 +40,31 @@ const saleItemSchema = new Schema<ISaleItem>(
     price: {
       type: Number,
       required: true,
+    },
+
+    subtotal: {
+      type: Number,
+      required: true,
+    },
+
+    gst: {
+      type: Number,
+      default: 0,
+    },
+
+    gstAmount: {
+      type: Number,
+      default: 0,
+    },
+
+    cgst: {
+      type: Number,
+      default: 0,
+    },
+
+    sgst: {
+      type: Number,
+      default: 0,
     },
 
     total: {

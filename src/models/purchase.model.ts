@@ -3,7 +3,14 @@ import mongoose, { Schema, Document } from "mongoose";
 export interface IPurchase extends Document {
   supplierName: string;
   storeId: mongoose.Types.ObjectId;
+
+  subtotal: number;
+  gstAmount: number;
+  cgst: number;
+  sgst: number;
+
   totalAmount: number;
+
   paymentMethod: "cash" | "upi" | "card" | "credit";
   purchaseDate: Date;
 }
@@ -19,6 +26,26 @@ const purchaseSchema = new Schema<IPurchase>(
       type: Schema.Types.ObjectId,
       ref: "Store",
       required: true,
+    },
+
+    subtotal: {
+      type: Number,
+      default: 0,
+    },
+
+    gstAmount: {
+      type: Number,
+      default: 0,
+    },
+
+    cgst: {
+      type: Number,
+      default: 0,
+    },
+
+    sgst: {
+      type: Number,
+      default: 0,
     },
 
     totalAmount: {

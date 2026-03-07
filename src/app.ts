@@ -5,6 +5,7 @@ import authRoutes from "./routes/auth.routes.js";
 import productRoutes from "./routes/product.routes.js";
 import saleRoutes from "./routes/sale.routes.js";
 import purchaseRoutes from "./routes/purchase.routes.js";
+import path from "path";
 
 const app = express();
 
@@ -25,5 +26,12 @@ app.use("/api/auth", authRoutes);
 app.use("/api/products", productRoutes);
 app.use("/api/sales", saleRoutes);
 app.use("/api/purchases", purchaseRoutes);
+
+app.use(express.static(path.resolve("dist")));
+
+/* React Router fallback */
+app.use((req, res) => {
+  res.sendFile(path.resolve("dist/index.html"));
+});
 
 export default app;
