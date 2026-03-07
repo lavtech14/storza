@@ -1,12 +1,15 @@
 import express from "express";
+import {
+  createSale,
+  getSales,
+  getSaleById,
+} from "../controllers/sale.controller.js";
 import { protect } from "../middleware/auth.middleware.js";
-import { createSale } from "../controllers/sale.controller.js";
-import { getSalesSummary } from "../controllers/sale.controller.js";
-import { authorize } from "../middleware/role.middleware.js";
 
 const router = express.Router();
 
-router.post("/", protect, authorize("admin", "staff"), createSale);
-router.get("/summary", protect, authorize("admin"), getSalesSummary);
+router.post("/", protect, createSale);
+router.get("/", protect, getSales);
+router.get("/details/:id", protect, getSaleById);
 
 export default router;

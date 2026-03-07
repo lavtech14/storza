@@ -2,12 +2,27 @@ import mongoose, { Schema, Document } from "mongoose";
 
 export interface IProduct extends Document {
   name: string;
-  price: number;
-  stock: number;
   category: string;
+
+  sku?: string;
+  brand?: string;
+  unit?: string;
+
+  buyingPrice?: number;
+  sellingPrice?: number;
+  discountPrice?: number;
+
+  gst?: number;
+  hsnCode?: string;
+
+  barcode?: string;
+
+  quantity: number;
+  minStockAlert?: number;
+
+  expiryDate?: Date;
+
   storeId: mongoose.Types.ObjectId;
-  gstRate: number; // example: 5, 12, 18
-  hsnCode: string;
 }
 
 const productSchema = new Schema<IProduct>(
@@ -15,36 +30,77 @@ const productSchema = new Schema<IProduct>(
     name: {
       type: String,
       required: true,
+      trim: true,
     },
-    price: {
-      type: Number,
-      required: true,
-    },
-    stock: {
-      type: Number,
-      required: true,
-    },
+
     category: {
       type: String,
-      required: true,
+      default: "general",
     },
-    storeId: {
-      type: Schema.Types.ObjectId,
-      ref: "Store",
-      required: true,
+
+    sku: {
+      type: String,
+      unique: true,
     },
-    gstRate: {
+
+    brand: {
+      type: String,
+    },
+
+    unit: {
+      type: String,
+      enum: ["kg", "gram", "litre", "ml", "piece", "packet", "box"],
+      default: "piece",
+    },
+
+    buyingPrice: {
+      type: Number,
+    },
+
+    sellingPrice: {
+      type: Number,
+    },
+
+    discountPrice: {
+      type: Number,
+    },
+
+    gst: {
+      type: Number, // 5, 12, 18, 28
+      default: 0,
+    },
+
+    hsnCode: {
+      type: String,
+    },
+
+    barcode: {
+      type: String,
+      unique: true,
+      sparse: true,
+    },
+
+    quantity: {
       type: Number,
       default: 0,
     },
-    hsnCode: {
-      type: String,
-      default: "",
+
+    minStockAlert: {
+      type: Number,
+      default: 5,
+    },
+
+    expiryDate: {
+      type: Date,
+    },
+
+    storeId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "Store",
+      required: true,
     },
   },
   { timestamps: true },
 );
 
-const Product = mongoose.model<IProduct>("Product", productSchema);
-
-export default Product;
+export default mongoose.model<IProduct>("Product", productSchema);

@@ -1,42 +1,20 @@
 import express from "express";
-import Product from "../models/product.model.js";
+import {
+  createProduct,
+  getProducts,
+  updateProduct,
+  deleteProduct,
+} from "../controllers/productController.js";
 import { protect } from "../middleware/auth.middleware.js";
-import { authorize } from "../middleware/role.middleware.js";
 
 const router = express.Router();
 
-// Create Product
-router.post("/", protect, authorize("admin"), async (req: any, res) => {
-  try {
-    const { name, price, stock, category, gstRate, hsnCode } = req.body;
+router.post("/", protect, createProduct);
 
-    const product = await Product.create({
-      name,
-      price,
-      stock,
-      category,
-      gstRate,
-      hsnCode,
-      storeId: req.user.storeId,
-    });
+router.get("/", protect, getProducts);
 
-    res.status(201).json(product);
-  } catch (error) {
-    res.status(500).json({ message: "Error creating product", error });
-  }
-});
+router.put("/:id", protect, updateProduct);
 
-// Get All Products (Only Store's Products)
-router.get("/", protect, async (req: any, res) => {
-  try {
-    const products = await Product.find({
-      storeId: req.user.storeId,
-    });
-
-    res.json(products);
-  } catch (error) {
-    res.status(500).json({ message: "Error fetching products" });
-  }
-});
+router.delete("/:id", protect, deleteProduct);
 
 export default router;

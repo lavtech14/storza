@@ -1,112 +1,133 @@
 import type { Request, Response } from "express";
+import mongoose from "mongoose";
+
 import Sale from "../models/sale.model.js";
+import SaleItem from "../models/saleItem.model.js";
 import Product from "../models/product.model.js";
-import Store from "../models/store.model.js";
+import { generateInvoiceNumber } from "../utils/invoice.js";
 
-export const createSale = async (req: any, res: Response) => {
+export const createSale = async (req: Request, res: Response) => {
+  const session = await mongoose.startSession();
+
   try {
-    const { items, paymentMode } = req.body;
+    session.startTransaction();
 
-    let subtotal = 0;
-    let totalTax = 0;
+    const { customerName, paymentMethod, items } = req.body;
+    const storeId = (req as any).user.storeId;
 
-    const saleItems = [];
-
-    for (const item of items) {
-      const product = await Product.findById(item.productId);
-
-      if (!product) {
-        return res.status(404).json({ message: "Product not found" });
-      }
-
-      if (product.stock < item.quantity) {
-        return res.status(400).json({ message: "Insufficient stock" });
-      }
-      const store = await Store.findById(req.user.storeId);
-
-      if (!store) {
-        return res.status(404).json({ message: "Store not found" });
-      }
-
-      const itemTotal = product.price * item.quantity;
-      let taxAmount = 0;
-      let cgst = 0;
-      let sgst = 0;
-      if (store.isGSTRegistered) {
-        taxAmount = (itemTotal * product.gstRate) / 100;
-        cgst = taxAmount / 2;
-        sgst = taxAmount / 2;
-      }
-
-      subtotal += itemTotal;
-      totalTax += taxAmount;
-
-      saleItems.push({
-        productId: product._id,
-        quantity: item.quantity,
-        price: product.price,
-        gstRate: product.gstRate,
-        cgst,
-        sgst,
-        igst: 0,
-        total: itemTotal + taxAmount,
+    if (!items || items.length === 0) {
+      return res.status(400).json({
+        message: "Sale items required",
       });
-
-      // Deduct stock
-      product.stock -= item.quantity;
-      await product.save();
     }
 
-    const grandTotal = subtotal + totalTax;
+    const invoiceNumber = generateInvoiceNumber();
 
-    const sale = await Sale.create({
-      items: saleItems,
-      subtotal,
-      totalTax,
-      grandTotal,
-      paymentMode,
-      storeId: req.user.storeId,
+    const sale = new Sale({
+      invoiceNumber,
+      customerName,
+      paymentMethod,
+      storeId,
+      totalAmount: 0,
     });
 
-    res.status(201).json(sale);
-  } catch (error) {
-    res.status(500).json({ message: "Error creating sale", error });
+    await sale.save({ session });
+
+    let totalAmount = 0;
+    const saleItems: any[] = [];
+
+    for (const item of items) {
+      const { productId, quantity } = item;
+
+      const product = await Product.findById(productId).session(session);
+
+      if (!product) {
+        throw new Error("Product not found");
+      }
+
+      if (product.quantity < quantity) {
+        throw new Error(`${product.name} is out of stock`);
+      }
+
+      const price = product.sellingPrice || 0;
+      const total = price * quantity;
+
+      totalAmount += total;
+
+      saleItems.push({
+        saleId: sale._id,
+        productId,
+        quantity,
+        price,
+        total,
+      });
+
+      product.quantity -= quantity;
+      await product.save({ session });
+    }
+
+    await SaleItem.insertMany(saleItems, { session });
+
+    sale.totalAmount = totalAmount;
+    await sale.save({ session });
+
+    await session.commitTransaction();
+
+    res.status(201).json({
+      success: true,
+      message: "Sale completed",
+      sale,
+    });
+  } catch (error: any) {
+    await session.abortTransaction();
+
+    res.status(500).json({
+      success: false,
+      message: error.message,
+    });
+  } finally {
+    session.endSession();
   }
 };
 
-export const getSalesSummary = async (req: any, res: Response) => {
+export const getSales = async (req: any, res: Response) => {
   try {
-    const storeId = req.user.storeId;
+    const sales = await Sale.find({
+      storeId: req.user.storeId,
+    }).sort({ createdAt: -1 });
 
-    const sales = await Sale.find({ storeId });
-
-    const totalSales = sales.reduce((acc, sale) => acc + sale.grandTotal, 0);
-    const totalTax = sales.reduce((acc, sale) => acc + sale.totalTax, 0);
-
-    const today = new Date();
-    today.setHours(0, 0, 0, 0);
-
-    const todaySales = sales
-      .filter((sale) => sale.createdAt >= today)
-      .reduce((acc, sale) => acc + sale.grandTotal, 0);
-
-    const paymentBreakdown = {
-      cash: 0,
-      upi: 0,
-      card: 0,
-    };
-
-    sales.forEach((sale) => {
-      paymentBreakdown[sale.paymentMode] += sale.grandTotal;
-    });
-
-    res.json({
-      totalSales,
-      totalTax,
-      todaySales,
-      paymentBreakdown,
+    res.status(200).json({
+      success: true,
+      data: sales,
     });
   } catch (error) {
-    res.status(500).json({ message: "Error fetching summary" });
+    res.status(500).json({
+      message: "Failed to fetch sales",
+    });
+  }
+};
+
+export const getSaleById = async (req: Request, res: Response) => {
+  try {
+    const id = req.params.id as string;
+
+    const sale = await Sale.findById(id);
+
+    if (!sale) {
+      return res.status(404).json({
+        message: "Sale not found",
+      });
+    }
+
+    const items = await SaleItem.find({ saleId: id }).populate("productId");
+
+    res.status(200).json({
+      sale,
+      items,
+    });
+  } catch (error) {
+    res.status(500).json({
+      message: "Failed to fetch sale",
+    });
   }
 };
