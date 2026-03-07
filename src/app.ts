@@ -27,12 +27,11 @@ app.use("/api/products", productRoutes);
 app.use("/api/sales", saleRoutes);
 app.use("/api/purchases", purchaseRoutes);
 
-const __dirname = path.resolve();
-app.use(express.static(path.join(__dirname, "dist")));
+app.use(express.static(path.resolve("dist")));
 
 /* REACT ROUTER FALLBACK */
-app.get("*", (req, res) => {
-  res.sendFile(path.join(__dirname, "dist", "index.html"));
+app.get(/.*/, (req, res) => {
+  res.sendFile(path.resolve("dist/index.html"));
 });
 
 export default app;
