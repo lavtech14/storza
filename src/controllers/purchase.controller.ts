@@ -88,34 +88,6 @@ export const createPurchase = async (req: Request, res: Response) => {
     });
   }
 };
-// export const getPurchases = async (req: Request, res: Response) => {
-//   try {
-//     const user = (req as any).user;
-
-//     if (!user || !user.storeId) {
-//       return res.status(401).json({
-//         success: false,
-//         message: "Unauthorized. Store ID missing.",
-//       });
-//     }
-
-//     const purchases = await Purchase.find({ storeId: user.storeId })
-//       .populate("supplierId") // Make sure this matches your schema
-//       .sort({ createdAt: -1 });
-
-//     return res.status(200).json({
-//       success: true,
-//       data: purchases,
-//     });
-//   } catch (error) {
-//     console.error("Get Purchases Error:", error);
-
-//     return res.status(500).json({
-//       success: false,
-//       message: "Failed to fetch purchases",
-//     });
-//   }
-// };
 
 export const getPurchases = async (req: any, res: Response) => {
   try {
@@ -126,11 +98,58 @@ export const getPurchases = async (req: any, res: Response) => {
       });
     }
 
-    const purchases = await Purchase.find({
-      storeId: req.user.storeId,
-    })
+    const storeId = req.user.storeId;
+
+    const page = Number(req.query.page) || 1;
+    const limit = Number(req.query.limit) || 10;
+    const search = req.query.search || "";
+
+    const skip = (page - 1) * limit;
+
+    // Build the filter
+    const filter: any = { storeId };
+
+    // UNIVERSAL SEARCH - if search term exists, search across all fields
+    if (search) {
+      // Get purchase IDs that have products matching the search
+      const matchingProductItems = await PurchaseItem.find()
+        .populate({
+          path: "productId",
+          match: { name: { $regex: search, $options: "i" } },
+          select: "name",
+        })
+        .lean();
+
+      const purchaseIdsFromProducts = matchingProductItems
+        .filter((item) => item.productId)
+        .map((item) => item.purchaseId);
+
+      // Universal search across all fields
+      filter.$or = [
+        { supplierName: { $regex: search, $options: "i" } },
+        { paymentMethod: { $regex: search, $options: "i" } },
+        { _id: { $in: purchaseIdsFromProducts } },
+        { "items.productName": { $regex: search, $options: "i" } },
+      ];
+
+      // Also search numeric fields if search is a number
+      const searchNumber = parseFloat(search);
+      if (!isNaN(searchNumber)) {
+        filter.$or.push(
+          { subtotal: searchNumber },
+          { gstAmount: searchNumber },
+          { totalAmount: searchNumber },
+        );
+      }
+    }
+
+    const purchases = await Purchase.find(filter)
       .sort({ createdAt: -1 })
+      .skip(skip)
+      .limit(limit)
       .lean();
+
+    const total = await Purchase.countDocuments(filter);
 
     const purchasesWithItems = await Promise.all(
       purchases.map(async (purchase: any) => {
@@ -150,6 +169,12 @@ export const getPurchases = async (req: any, res: Response) => {
     return res.status(200).json({
       success: true,
       data: purchasesWithItems,
+      pagination: {
+        total,
+        page,
+        limit,
+        totalPages: Math.ceil(total / limit),
+      },
     });
   } catch (error) {
     console.error(error);

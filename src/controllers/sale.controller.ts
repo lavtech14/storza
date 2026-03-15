@@ -126,11 +126,27 @@ export const getSales = async (req: any, res: Response) => {
   try {
     const storeId = req.user.storeId;
 
-    const sales = await Sale.find({
+    const page = Number(req.query.page) || 1;
+    const limit = Number(req.query.limit) || 10;
+    const search = req.query.search || "";
+
+    const skip = (page - 1) * limit;
+
+    const filter: any = {
       storeId,
-    })
+      $or: [
+        { customerName: { $regex: search, $options: "i" } },
+        { invoiceNumber: { $regex: search, $options: "i" } },
+      ],
+    };
+
+    const sales = await Sale.find(filter)
       .sort({ createdAt: -1 })
+      .skip(skip)
+      .limit(limit)
       .lean();
+
+    const total = await Sale.countDocuments(filter);
 
     const salesWithItems = await Promise.all(
       sales.map(async (sale: any) => {
@@ -150,6 +166,12 @@ export const getSales = async (req: any, res: Response) => {
     res.status(200).json({
       success: true,
       data: salesWithItems,
+      pagination: {
+        total,
+        page,
+        limit,
+        totalPages: Math.ceil(total / limit),
+      },
     });
   } catch (error) {
     console.error(error);

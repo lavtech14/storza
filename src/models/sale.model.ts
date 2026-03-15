@@ -13,6 +13,8 @@ export interface ISale extends Document {
   totalAmount: number;
 
   storeId: mongoose.Types.ObjectId;
+  createdAt: Date;
+  updatedAt: Date;
 }
 
 const saleSchema = new Schema<ISale>(

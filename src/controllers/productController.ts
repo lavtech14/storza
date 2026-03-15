@@ -22,14 +22,44 @@ export const createProduct = async (req: Request, res: Response) => {
   }
 };
 
-/* ---------------- GET PRODUCTS BY STORE ---------------- */
+/* ---------------- GET PRODUCTS ---------------- */
 export const getProducts = async (req: any, res: Response) => {
   try {
     const storeId = req.user.storeId;
 
-    const products = await Product.find({ storeId });
+    const page = Number(req.query.page) || 1;
+    const limit = Number(req.query.limit) || 10;
+    const search = req.query.search || "";
 
-    res.json(products);
+    const skip = (page - 1) * limit;
+
+    // Search filter
+    const searchFilter = {
+      storeId,
+      $or: [
+        { name: { $regex: search, $options: "i" } },
+        { category: { $regex: search, $options: "i" } },
+        { brand: { $regex: search, $options: "i" } },
+        { sku: { $regex: search, $options: "i" } },
+      ],
+    };
+
+    const products = await Product.find(searchFilter)
+      .skip(skip)
+      .limit(limit)
+      .sort({ createdAt: -1 });
+
+    const total = await Product.countDocuments(searchFilter);
+
+    res.json({
+      data: products,
+      pagination: {
+        total,
+        page,
+        limit,
+        totalPages: Math.ceil(total / limit),
+      },
+    });
   } catch (error) {
     console.error(error);
     res.status(500).json({ message: "Error fetching products" });

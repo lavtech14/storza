@@ -5,7 +5,9 @@ import authRoutes from "./routes/auth.routes.js";
 import productRoutes from "./routes/product.routes.js";
 import saleRoutes from "./routes/sale.routes.js";
 import purchaseRoutes from "./routes/purchase.routes.js";
+import dashboardRoutes from "./routes/dashboard.routes.js";
 import path from "path";
+import analyticsRoutes from "./routes/analytics.routes.js";
 
 const app = express();
 
@@ -26,6 +28,8 @@ app.use("/api/auth", authRoutes);
 app.use("/api/products", productRoutes);
 app.use("/api/sales", saleRoutes);
 app.use("/api/purchases", purchaseRoutes);
+app.use("/api/dashboard", dashboardRoutes);
+app.use("/api/analytics", analyticsRoutes);
 
 app.use(express.static(path.resolve("dist")));
 
