@@ -11,6 +11,9 @@ export interface IPurchase extends Document {
 
   totalAmount: number;
 
+  isDeleted: boolean;
+  deletedAt: Date | null;
+
   paymentMethod: "cash" | "upi" | "card" | "credit";
   purchaseDate: Date;
 }
@@ -66,6 +69,14 @@ const purchaseSchema = new Schema<IPurchase>(
       type: Date,
       default: Date.now,
       index: true,
+    },
+    isDeleted: {
+      type: Boolean,
+      default: false,
+      // for soft delete filtering
+    },
+    deletedAt: {
+      type: Date,
     },
   },
   { timestamps: true },

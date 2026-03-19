@@ -1,24 +1,28 @@
 import type { Request, Response } from "express";
+import mongoose from "mongoose";
 import Purchase from "../models/purchase.model.js";
 import PurchaseItem from "../models/purchaseItem.model.js";
 import Product from "../models/product.model.js";
+import { io } from "../server.js";
 
 export const createPurchase = async (req: Request, res: Response) => {
-  try {
-    const { supplierName, paymentMethod, items } = req.body;
+  const session = await mongoose.startSession();
 
+  try {
+    session.startTransaction();
+
+    const { supplierName, paymentMethod, items } = req.body;
     const storeId = (req as any).user.storeId;
 
     if (!items || items.length === 0) {
-      return res.status(400).json({ message: "Purchase items required" });
+      return res.status(400).json({
+        success: false,
+        message: "Purchase items required",
+      });
     }
 
-    let subtotal = 0;
-    let totalGST = 0;
-    let totalAmount = 0;
-
-    // create purchase
-    const purchase = await Purchase.create({
+    /* CREATE PURCHASE */
+    const purchase = new Purchase({
       supplierName,
       paymentMethod,
       storeId,
@@ -29,29 +33,39 @@ export const createPurchase = async (req: Request, res: Response) => {
       totalAmount: 0,
     });
 
+    await purchase.save({ session });
+
+    let subtotal = 0;
+    let totalGST = 0;
+
+    const purchaseItems: any[] = [];
+
     for (const item of items) {
       const { productId, quantity, buyPrice } = item;
 
-      const product = await Product.findById(productId);
+      if (!productId || quantity <= 0 || buyPrice <= 0) {
+        throw new Error("Invalid purchase item");
+      }
+
+      const product = await Product.findById(productId).session(session);
 
       if (!product) {
-        return res.status(404).json({ message: "Product not found" });
+        throw new Error("Product not found");
       }
 
       const gst = product.gst || 0;
 
-      const itemSubtotal = quantity * buyPrice;
+      const itemSubtotal = buyPrice * quantity;
       const gstAmount = (itemSubtotal * gst) / 100;
       const total = itemSubtotal + gstAmount;
 
       subtotal += itemSubtotal;
       totalGST += gstAmount;
-      totalAmount += total;
 
-      // save purchase item
-      await PurchaseItem.create({
+      purchaseItems.push({
         purchaseId: purchase._id,
         productId,
+        productName: product.name,
         quantity,
         buyPrice,
         subtotal: itemSubtotal,
@@ -62,43 +76,64 @@ export const createPurchase = async (req: Request, res: Response) => {
         total,
       });
 
-      // update stock
-      await Product.findByIdAndUpdate(productId, {
-        $inc: { quantity: quantity },
-        buyingPrice: buyPrice,
+      /* UPDATE PRODUCT STOCK AND BUYING PRICE */
+      product.quantity += quantity;
+      product.buyingPrice = buyPrice; // Update buying price
+      await product.save({ session });
+
+      // SOCKET: stock updated
+      io.emit("stockUpdated", {
+        productId: product._id,
+        quantity: product.quantity,
+        buyingPrice: product.buyingPrice,
       });
     }
+
+    /* INSERT PURCHASE ITEMS */
+    await PurchaseItem.insertMany(purchaseItems, { session });
+
+    const grandTotal = subtotal + totalGST;
 
     purchase.subtotal = subtotal;
     purchase.gstAmount = totalGST;
     purchase.cgst = totalGST / 2;
     purchase.sgst = totalGST / 2;
-    purchase.totalAmount = totalAmount;
+    purchase.totalAmount = grandTotal;
 
-    await purchase.save();
+    await purchase.save({ session });
+
+    await session.commitTransaction();
+
+    // SOCKET: purchase created
+    io.emit("purchaseCreated", purchase);
 
     res.status(201).json({
-      message: "Purchase created successfully",
-      purchase,
+      success: true,
+      message: "Purchase completed successfully",
+      data: purchase,
     });
-  } catch (error) {
-    console.error(error);
+  } catch (error: any) {
+    await session.abortTransaction();
+
     res.status(500).json({
-      message: "Error creating purchase",
+      success: false,
+      message: error.message || "Purchase failed",
     });
+  } finally {
+    session.endSession();
   }
 };
 
 export const getPurchases = async (req: any, res: Response) => {
   try {
-    if (!req.user?.storeId) {
-      return res.status(401).json({
+    const storeId = req.user.storeId;
+
+    if (!storeId) {
+      return res.status(400).json({
         success: false,
-        message: "Unauthorized",
+        message: "Store ID is required",
       });
     }
-
-    const storeId = req.user.storeId;
 
     const page = Number(req.query.page) || 1;
     const limit = Number(req.query.limit) || 10;
@@ -106,34 +141,68 @@ export const getPurchases = async (req: any, res: Response) => {
 
     const skip = (page - 1) * limit;
 
-    // Build the filter
-    const filter: any = { storeId };
+    // Initialize with explicit type
+    let purchaseIds: string[] = [];
+    let total = 0;
+    let purchases = [];
 
-    // UNIVERSAL SEARCH - if search term exists, search across all fields
-    if (search) {
-      // Get purchase IDs that have products matching the search
-      const matchingProductItems = await PurchaseItem.find()
+    // If search term exists, check if it matches any product names
+    if (search && search.toString().trim()) {
+      const searchTerm = search.toString().trim();
+
+      // First, find all PurchaseItems that have products matching the search term
+      const matchingItems = await PurchaseItem.find()
         .populate({
           path: "productId",
-          match: { name: { $regex: search, $options: "i" } },
+          match: {
+            name: { $regex: searchTerm, $options: "i" },
+          },
           select: "name",
         })
-        .lean();
+        .lean()
+        .exec();
 
-      const purchaseIdsFromProducts = matchingProductItems
-        .filter((item) => item.productId)
-        .map((item) => item.purchaseId);
+      // Filter out items where productId is null (no match)
+      const validItems = matchingItems.filter(
+        (item: any) => item.productId !== null,
+      );
 
-      // Universal search across all fields
-      filter.$or = [
-        { supplierName: { $regex: search, $options: "i" } },
-        { paymentMethod: { $regex: search, $options: "i" } },
-        { _id: { $in: purchaseIdsFromProducts } },
-        { "items.productName": { $regex: search, $options: "i" } },
+      // Get unique purchaseIds from matching items and convert to strings
+      purchaseIds = [
+        ...new Set(validItems.map((item: any) => item.purchaseId.toString())),
       ];
 
+      console.log(
+        `Found ${purchaseIds.length} purchases with matching products`,
+      );
+    }
+
+    // Build filter for purchases
+    const filter: any = {
+      storeId: new mongoose.Types.ObjectId(storeId),
+      isDeleted: { $ne: true },
+    };
+
+    // Add search conditions
+    if (search && search.toString().trim()) {
+      const searchTerm = search.toString().trim();
+
+      filter.$or = [
+        { supplierName: { $regex: searchTerm, $options: "i" } },
+        { paymentMethod: { $regex: searchTerm, $options: "i" } },
+      ];
+
+      // If we found purchases with matching products, add them to the OR condition
+      if (purchaseIds.length > 0) {
+        filter.$or.push({
+          _id: {
+            $in: purchaseIds.map((id) => new mongoose.Types.ObjectId(id)),
+          },
+        });
+      }
+
       // Also search numeric fields if search is a number
-      const searchNumber = parseFloat(search);
+      const searchNumber = parseFloat(searchTerm);
       if (!isNaN(searchNumber)) {
         filter.$or.push(
           { subtotal: searchNumber },
@@ -143,56 +212,83 @@ export const getPurchases = async (req: any, res: Response) => {
       }
     }
 
-    const purchases = await Purchase.find(filter)
+    console.log("Final filter:", JSON.stringify(filter));
+
+    // Get total count
+    total = await Purchase.countDocuments(filter);
+
+    // Fetch purchases
+    purchases = await Purchase.find(filter)
       .sort({ createdAt: -1 })
       .skip(skip)
       .limit(limit)
-      .lean();
+      .lean()
+      .exec();
 
-    const total = await Purchase.countDocuments(filter);
+    console.log(`Found ${purchases.length} purchases`);
 
+    // Fetch items for each purchase
     const purchasesWithItems = await Promise.all(
       purchases.map(async (purchase: any) => {
-        const items = await PurchaseItem.find({
-          purchaseId: purchase._id,
-        })
-          .populate("productId", "name")
-          .lean();
+        try {
+          const items = await PurchaseItem.find({
+            purchaseId: purchase._id,
+          })
+            .populate({
+              path: "productId",
+              select: "name price buyingPrice",
+            })
+            .lean()
+            .exec();
 
-        return {
-          ...purchase,
-          items,
-        };
+          return {
+            ...purchase,
+            items: items || [],
+          };
+        } catch (itemError) {
+          console.error(
+            `Error fetching items for purchase ${purchase._id}:`,
+            itemError,
+          );
+          return {
+            ...purchase,
+            items: [],
+          };
+        }
       }),
     );
 
-    return res.status(200).json({
+    const totalPages = Math.ceil(total / limit);
+
+    res.status(200).json({
       success: true,
       data: purchasesWithItems,
       pagination: {
         total,
         page,
         limit,
-        totalPages: Math.ceil(total / limit),
+        totalPages,
+        hasNextPage: page < totalPages,
+        hasPrevPage: page > 1,
       },
     });
   } catch (error) {
-    console.error(error);
+    console.error("Error in getPurchases:", error);
+    console.error("Error stack:", error);
 
-    return res.status(500).json({
+    res.status(500).json({
       success: false,
       message: "Failed to fetch purchases",
+      error: process.env.NODE_ENV === "development" ? error : undefined,
     });
   }
 };
 
 export const getPurchaseById = async (req: Request, res: Response) => {
   try {
-    const { id } = req.params;
+    const id = req.params.id as string;
 
-    const purchase = await Purchase.findById(id)
-      .populate("supplierId")
-      .populate("products.productId");
+    const purchase = await Purchase.findById(id);
 
     if (!purchase) {
       return res.status(404).json({
@@ -201,15 +297,215 @@ export const getPurchaseById = async (req: Request, res: Response) => {
       });
     }
 
+    const items = await PurchaseItem.find({
+      purchaseId: id,
+      isDeleted: { $ne: true },
+    }).populate("productId");
+
     res.status(200).json({
       success: true,
-      data: purchase,
+      data: {
+        ...purchase.toObject(),
+        items,
+      },
     });
   } catch (error) {
+    console.error("Error in getPurchaseById:", error);
     res.status(500).json({
       success: false,
       message: "Failed to fetch purchase",
-      error,
     });
+  }
+};
+
+export const updatePurchase = async (req: Request, res: Response) => {
+  const session = await mongoose.startSession();
+
+  try {
+    session.startTransaction();
+
+    const purchaseId = req.params.id as string;
+    const purchaseObjectId = new mongoose.Types.ObjectId(purchaseId);
+    const { supplierName, paymentMethod, items } = req.body;
+
+    if (!items || items.length === 0) {
+      throw new Error("Purchase items required");
+    }
+
+    const purchase = await Purchase.findById(purchaseId).session(session);
+
+    if (!purchase) {
+      throw new Error("Purchase not found");
+    }
+
+    /* 1️⃣ GET OLD ITEMS */
+    const oldItems = await PurchaseItem.find({
+      purchaseId: purchaseObjectId,
+    }).session(session);
+
+    /* 2️⃣ RESTORE STOCK (subtract old quantities) */
+    for (const item of oldItems) {
+      const product = await Product.findById(item.productId).session(session);
+      if (product) {
+        product.quantity -= item.quantity;
+        await product.save({ session });
+
+        // SOCKET: stock updated
+        io.emit("stockUpdated", {
+          productId: product._id,
+          quantity: product.quantity,
+        });
+      }
+    }
+
+    /* 3️⃣ DELETE OLD ITEMS */
+    await PurchaseItem.deleteMany({ purchaseId: purchaseObjectId }).session(
+      session,
+    );
+
+    let subtotal = 0;
+    let totalGST = 0;
+    const newItems: any[] = [];
+
+    /* 4️⃣ ADD NEW ITEMS */
+    for (const item of items) {
+      const { productId, quantity, buyPrice } = item;
+
+      const product = await Product.findById(productId).session(session);
+
+      if (!product) throw new Error("Product not found");
+
+      const gst = product.gst || 0;
+
+      const itemSubtotal = buyPrice * quantity;
+      const gstAmount = (itemSubtotal * gst) / 100;
+
+      subtotal += itemSubtotal;
+      totalGST += gstAmount;
+
+      newItems.push({
+        purchaseId,
+        productId,
+        productName: product.name,
+        quantity,
+        buyPrice,
+        subtotal: itemSubtotal,
+        gst,
+        gstAmount,
+        cgst: gstAmount / 2,
+        sgst: gstAmount / 2,
+        total: itemSubtotal + gstAmount,
+      });
+
+      /* UPDATE STOCK AND BUYING PRICE */
+      product.quantity += quantity;
+      product.buyingPrice = buyPrice;
+      await product.save({ session });
+
+      // SOCKET: stock updated
+      io.emit("stockUpdated", {
+        productId: product._id,
+        quantity: product.quantity,
+        buyingPrice: product.buyingPrice,
+      });
+    }
+
+    /* 5️⃣ INSERT NEW ITEMS */
+    await PurchaseItem.insertMany(newItems, { session });
+
+    /* 6️⃣ UPDATE PURCHASE */
+    purchase.supplierName = supplierName;
+    purchase.paymentMethod = paymentMethod;
+    purchase.subtotal = subtotal;
+    purchase.gstAmount = totalGST;
+    purchase.cgst = totalGST / 2;
+    purchase.sgst = totalGST / 2;
+    purchase.totalAmount = subtotal + totalGST;
+
+    await purchase.save({ session });
+
+    await session.commitTransaction();
+
+    // SOCKET: purchase updated
+    io.emit("purchaseUpdated", purchase);
+
+    res.status(200).json({
+      success: true,
+      message: "Purchase updated successfully",
+      data: purchase,
+    });
+  } catch (error: any) {
+    await session.abortTransaction();
+
+    res.status(500).json({
+      success: false,
+      message: error.message || "Update failed",
+    });
+  } finally {
+    session.endSession();
+  }
+};
+
+export const deletePurchase = async (req: Request, res: Response) => {
+  const session = await mongoose.startSession();
+
+  try {
+    session.startTransaction();
+
+    const purchaseId = req.params.id as string;
+
+    const purchase = await Purchase.findById(purchaseId).session(session);
+
+    if (!purchase) {
+      throw new Error("Purchase not found");
+    }
+
+    if (purchase.isDeleted) {
+      throw new Error("Purchase already deleted");
+    }
+
+    /* 1️⃣ GET ITEMS */
+    const items = await PurchaseItem.find({ purchaseId }).session(session);
+
+    /* 2️⃣ RESTORE STOCK (subtract quantities since this was an inbound purchase) */
+    for (const item of items) {
+      const product = await Product.findById(item.productId).session(session);
+
+      if (product) {
+        product.quantity -= item.quantity;
+        await product.save({ session });
+
+        // SOCKET: stock updated
+        io.emit("stockUpdated", {
+          productId: product._id,
+          quantity: product.quantity,
+        });
+      }
+    }
+
+    /* 3️⃣ MARK AS DELETED */
+    purchase.isDeleted = true;
+    purchase.deletedAt = new Date();
+
+    await purchase.save({ session });
+
+    await session.commitTransaction();
+
+    // SOCKET: purchase deleted
+    io.emit("purchaseDeleted", { purchaseId });
+
+    res.status(200).json({
+      success: true,
+      message: "Purchase deleted successfully",
+    });
+  } catch (error: any) {
+    await session.abortTransaction();
+
+    res.status(500).json({
+      success: false,
+      message: error.message || "Delete failed",
+    });
+  } finally {
+    session.endSession();
   }
 };

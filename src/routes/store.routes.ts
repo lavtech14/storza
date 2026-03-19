@@ -2,6 +2,7 @@ import express from "express";
 import type { Request, Response } from "express";
 import Store from "../models/store.model.js";
 import { protect } from "../middleware/auth.middleware.js";
+import { io } from "../server.js";
 
 const router = express.Router();
 
@@ -56,7 +57,7 @@ router.post("/", protect, async (req: Request, res: Response) => {
       isGSTRegistered,
       gstNumber: isGSTRegistered ? gstNumber : undefined,
     });
-
+    io.emit("storeCreated", store);
     res.status(201).json({
       message: "Store created successfully",
       store,
@@ -71,16 +72,51 @@ router.post("/", protect, async (req: Request, res: Response) => {
 
 router.get("/", protect, async (req: Request, res: Response) => {
   try {
-    const stores = await Store.find().sort({ createdAt: -1 });
+    const { page = "1", limit = "10", search = "" } = req.query;
 
-    res.status(200).json(stores);
+    const pageNumber = parseInt(page as string);
+    const limitNumber = parseInt(limit as string);
+
+    const filter: any = {
+      isDeleted: false,
+    };
+
+    /* 🌍 GLOBAL SEARCH */
+
+    if (search) {
+      filter.$or = [
+        { name: { $regex: search, $options: "i" } },
+        { ownerName: { $regex: search, $options: "i" } },
+        { mobile: { $regex: search, $options: "i" } },
+        { email: { $regex: search, $options: "i" } },
+        { address: { $regex: search, $options: "i" } },
+        { storeType: { $regex: search, $options: "i" } },
+        { gstNumber: { $regex: search, $options: "i" } },
+      ];
+    }
+
+    const totalStores = await Store.countDocuments(filter);
+
+    const stores = await Store.find(filter)
+      .sort({ createdAt: -1 })
+      .skip((pageNumber - 1) * limitNumber)
+      .limit(limitNumber);
+
+    res.status(200).json({
+      data: stores,
+      pagination: {
+        total: totalStores,
+        page: pageNumber,
+        limit: limitNumber,
+        totalPages: Math.ceil(totalStores / limitNumber),
+      },
+    });
   } catch (error) {
     res.status(500).json({
       message: "Error fetching stores",
     });
   }
 });
-
 router.get("/:id", protect, async (req: Request, res: Response) => {
   try {
     const store = await Store.findById(req.params.id);
@@ -110,6 +146,7 @@ router.put("/:id", protect, async (req: Request, res: Response) => {
       gstNumber,
       storeType,
       isActive,
+      address,
     } = req.body;
 
     const store = await Store.findById(req.params.id);
@@ -128,13 +165,38 @@ router.put("/:id", protect, async (req: Request, res: Response) => {
     store.gstNumber = gstNumber ?? store.gstNumber;
     store.storeType = storeType ?? store.storeType;
     store.isActive = isActive ?? store.isActive;
+    store.address = address ?? store.address;
 
     const updatedStore = await store.save();
-
+    io.emit("storeUpdated", updatedStore);
     res.status(200).json(updatedStore);
   } catch (error) {
     res.status(500).json({
       message: "Error updating store",
+    });
+  }
+});
+
+router.delete("/:id", protect, async (req: Request, res: Response) => {
+  try {
+    const store = await Store.findById(req.params.id);
+
+    if (!store) {
+      return res.status(404).json({
+        message: "Store not found",
+      });
+    }
+
+    store.isDeleted = true;
+
+    await store.save();
+    io.emit("storeDeleted", store._id);
+    res.status(200).json({
+      message: "Store deleted successfully (soft delete)",
+    });
+  } catch (error) {
+    res.status(500).json({
+      message: "Error deleting store",
     });
   }
 });

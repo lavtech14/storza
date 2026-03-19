@@ -8,6 +8,8 @@ export interface IUser extends Document {
   role: "admin" | "storeOwner" | "staff";
   storeId?: mongoose.Types.ObjectId;
   isActive: boolean;
+  isDeleted: boolean;
+  deletedAt?: Date;
   comparePassword(password: string): Promise<boolean>;
 }
 
@@ -42,6 +44,13 @@ const userSchema = new Schema<IUser>(
     isActive: {
       type: Boolean,
       default: true,
+    },
+    isDeleted: {
+      type: Boolean,
+      default: false,
+    },
+    deletedAt: {
+      type: Date,
     },
   },
   {

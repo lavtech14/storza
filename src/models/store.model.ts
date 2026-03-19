@@ -10,6 +10,8 @@ export interface IStore extends Document {
   isGSTRegistered: boolean;
   gstNumber?: string;
   isActive: boolean;
+  isDeleted: boolean;
+  deletedAt?: Date;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -58,6 +60,14 @@ const storeSchema = new Schema<IStore>(
     isActive: {
       type: Boolean,
       default: true,
+    },
+    isDeleted: {
+      type: Boolean,
+      default: false,
+    },
+    deletedAt: {
+      type: Date,
+      default: null,
     },
   },
   {

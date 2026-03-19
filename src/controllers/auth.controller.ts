@@ -2,31 +2,7 @@ import type { Request, Response } from "express";
 import bcrypt from "bcryptjs";
 import jwt from "jsonwebtoken";
 import User from "../models/user.model.js";
-
-// export const register = async (req: Request, res: Response) => {
-//   try {
-//     const { name, email, password, role, storeId } = req.body;
-
-//     const existingUser = await User.findOne({ email });
-//     if (existingUser) {
-//       return res.status(400).json({ message: "User already exists" });
-//     }
-
-//     const hashedPassword = await bcrypt.hash(password, 10);
-
-//     const user = await User.create({
-//       name,
-//       email,
-//       password: hashedPassword,
-//       role,
-//       storeId,
-//     });
-
-//     res.status(201).json({ message: "User created successfully", user });
-//   } catch (error) {
-//     res.status(500).json({ message: "Error registering user", error });
-//   }
-// };
+import { io } from "../server.js";
 
 export const register = async (req: Request, res: Response) => {
   try {
@@ -61,7 +37,7 @@ export const register = async (req: Request, res: Response) => {
       role: role || "staff",
       storeId,
     });
-
+    io.emit("userCreated", user);
     const { password: _password, ...userData } = user.toObject();
 
     res.status(201).json({
@@ -157,16 +133,126 @@ export const login = async (req: Request, res: Response) => {
     });
   }
 };
+
 export const getUsers = async (req: Request, res: Response) => {
   try {
-    const users = await User.find()
-      .select("-password")
-      .populate("storeId", "name");
+    const { page = "1", limit = "10", search = "", storeId } = req.query;
 
-    res.status(200).json(users);
+    const pageNumber = parseInt(page as string);
+    const limitNumber = parseInt(limit as string);
+
+    const filter: any = {
+      isDeleted: { $ne: true },
+    };
+
+    /* Store Filter */
+
+    if (storeId) {
+      filter.storeId = storeId;
+    }
+
+    /* Search */
+
+    if (search) {
+      filter.$or = [
+        { name: { $regex: search, $options: "i" } },
+        { email: { $regex: search, $options: "i" } },
+      ];
+    }
+
+    const totalUsers = await User.countDocuments(filter);
+
+    const users = await User.find(filter)
+      .select("-password")
+      .populate("storeId", "name")
+      .skip((pageNumber - 1) * limitNumber)
+      .limit(limitNumber)
+      .sort({ createdAt: -1 });
+
+    res.status(200).json({
+      data: users,
+      pagination: {
+        total: totalUsers,
+        page: pageNumber,
+        limit: limitNumber,
+        totalPages: Math.ceil(totalUsers / limitNumber),
+      },
+    });
   } catch (error) {
     res.status(500).json({
       message: "Error fetching users",
+    });
+  }
+};
+
+export const updateUser = async (req: Request, res: Response) => {
+  try {
+    const { id } = req.params;
+    const { name, email, password, role, storeId, isActive } = req.body;
+
+    const user = await User.findById(id).select("+password");
+
+    if (!user || user.isDeleted) {
+      return res.status(404).json({
+        message: "User not found",
+      });
+    }
+
+    user.name = name ?? user.name;
+    user.email = email ?? user.email;
+    user.role = role ?? user.role;
+    user.storeId = storeId ?? user.storeId;
+    user.isActive = isActive ?? user.isActive;
+
+    if (password) {
+      user.password = password;
+    }
+
+    await user.save();
+
+    // ✅ FETCH AGAIN WITH POPULATE
+    const populatedUser = await User.findById(user._id)
+      .select("-password")
+      .populate("storeId", "name");
+
+    // ✅ SOCKET ALSO SHOULD SEND POPULATED
+    io.emit("userUpdated", populatedUser);
+
+    res.status(200).json({
+      message: "User updated successfully",
+      user: populatedUser,
+    });
+  } catch (error) {
+    res.status(500).json({
+      message: "Error updating user",
+    });
+  }
+};
+
+export const deleteUser = async (req: Request, res: Response) => {
+  try {
+    const { id } = req.params;
+
+    const user = await User.findById(id);
+
+    if (!user || user.isDeleted) {
+      return res.status(404).json({
+        message: "User not found",
+      });
+    }
+
+    user.isDeleted = true;
+    user.isActive = false;
+    user.deletedAt = new Date();
+
+    await user.save();
+    io.emit("userDeleted", user._id);
+    res.status(200).json({
+      message: "User deleted successfully",
+    });
+  } catch (error) {
+    res.status(500).json({
+      message: "Error deleting user",
     });
   }
 };
