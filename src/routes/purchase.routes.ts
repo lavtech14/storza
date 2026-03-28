@@ -5,6 +5,7 @@ import {
   getPurchases,
   updatePurchase,
   deletePurchase,
+  getPurchaseReport,
 } from "../controllers/purchase.controller.js";
 import { protect } from "../middleware/auth.middleware.js";
 
@@ -15,5 +16,6 @@ router.get("/", protect, getPurchases);
 router.get("/details/:id", protect, getPurchaseById);
 router.put("/:id", protect, updatePurchase);
 router.delete("/:id", protect, deletePurchase);
+router.get("/report", protect, getPurchaseReport);
 
 export default router;

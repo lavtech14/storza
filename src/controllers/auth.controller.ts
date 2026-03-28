@@ -1,9 +1,90 @@
 import type { Request, Response } from "express";
+import {
+  generateAccessToken,
+  generateRefreshToken,
+} from "../utils/generateToken.js";
 import bcrypt from "bcryptjs";
 import jwt from "jsonwebtoken";
 import User from "../models/user.model.js";
 import { io } from "../server.js";
 
+// export const register = async (req: Request, res: Response) => {
+//   try {
+//     const { name, email, password, role, storeId } = req.body;
+
+//     if (!name || !email || !password) {
+//       return res.status(400).json({
+//         message: "Name, email and password are required",
+//       });
+//     }
+
+//     const allowedRoles = ["admin", "storeOwner", "staff"];
+
+//     if (role && !allowedRoles.includes(role)) {
+//       return res.status(400).json({
+//         message: "Invalid role",
+//       });
+//     }
+
+//     const existingUser = await User.findOne({ email });
+
+//     if (existingUser) {
+//       return res.status(400).json({
+//         message: "User already exists",
+//       });
+//     }
+
+//     const user = await User.create({
+//       name,
+//       email,
+//       password,
+//       role: role || "staff",
+//       storeId,
+//     });
+//     io.emit("userCreated", user);
+//     const { password: _password, ...userData } = user.toObject();
+
+//     res.status(201).json({
+//       message: "User created successfully",
+//       user: userData,
+//     });
+//   } catch (error) {
+//     res.status(500).json({
+//       message: "Error registering user",
+//     });
+//   }
+// };
+
+export const refreshToken = async (req: Request, res: Response) => {
+  try {
+    const { refreshToken } = req.body;
+
+    if (!refreshToken) {
+      return res.status(401).json({ message: "No refresh token" });
+    }
+
+    const decoded = jwt.verify(
+      refreshToken,
+      process.env.REFRESH_SECRET as string,
+    ) as any;
+
+    const user = await User.findById(decoded.userId);
+
+    if (!user || user.isDeleted) {
+      return res.status(401).json({ message: "Invalid refresh token" });
+    }
+
+    const newAccessToken = generateAccessToken(user);
+
+    res.json({
+      accessToken: newAccessToken,
+    });
+  } catch (error) {
+    return res.status(401).json({
+      message: "Invalid refresh token",
+    });
+  }
+};
 export const register = async (req: Request, res: Response) => {
   try {
     const { name, email, password, role, storeId } = req.body;
@@ -11,14 +92,6 @@ export const register = async (req: Request, res: Response) => {
     if (!name || !email || !password) {
       return res.status(400).json({
         message: "Name, email and password are required",
-      });
-    }
-
-    const allowedRoles = ["admin", "storeOwner", "staff"];
-
-    if (role && !allowedRoles.includes(role)) {
-      return res.status(400).json({
-        message: "Invalid role",
       });
     }
 
@@ -37,7 +110,7 @@ export const register = async (req: Request, res: Response) => {
       role: role || "staff",
       storeId,
     });
-    io.emit("userCreated", user);
+
     const { password: _password, ...userData } = user.toObject();
 
     res.status(201).json({
@@ -50,36 +123,6 @@ export const register = async (req: Request, res: Response) => {
     });
   }
 };
-// export const login = async (req: Request, res: Response) => {
-//   try {
-//     const { email, password } = req.body;
-
-//     const user = await User.findOne({ email });
-//     if (!user) {
-//       return res.status(400).json({ message: "Invalid credentials" });
-//     }
-
-//     const isMatch = await bcrypt.compare(password, user.password);
-//     if (!isMatch) {
-//       return res.status(400).json({ message: "Invalid credentials" });
-//     }
-
-//     const token = jwt.sign(
-//       {
-//         userId: user._id,
-//         storeId: user.storeId,
-//         role: user.role,
-//       },
-//       process.env.JWT_SECRET as string,
-//       { expiresIn: "7d" },
-//     );
-
-//     res.json({ message: "Login successful", token });
-//   } catch (error) {
-//     res.status(500).json({ message: "Error logging in", error });
-//   }
-// };
-
 export const login = async (req: Request, res: Response) => {
   try {
     const { email, password } = req.body;
@@ -92,33 +135,35 @@ export const login = async (req: Request, res: Response) => {
 
     const user = await User.findOne({ email }).select("+password");
 
-    if (!user) {
-      return res.status(400).json({
+    if (!user || user.isDeleted) {
+      return res.status(401).json({
         message: "Invalid credentials",
       });
     }
 
-    const isMatch = await bcrypt.compare(password, user.password);
+    // ✅ check active
+    if (!user.isActive) {
+      return res.status(403).json({
+        message: "User is inactive",
+      });
+    }
+
+    const isMatch = await user.comparePassword(password);
 
     if (!isMatch) {
-      return res.status(400).json({
+      return res.status(401).json({
         message: "Invalid credentials",
       });
     }
 
-    const token = jwt.sign(
-      {
-        userId: user._id,
-        storeId: user.storeId,
-        role: user.role,
-      },
-      process.env.JWT_SECRET as string,
-      { expiresIn: "7d" },
-    );
+    // 🔥 TOKENS
+    const accessToken = generateAccessToken(user);
+    const refreshToken = generateRefreshToken(user);
 
     res.json({
       message: "Login successful",
-      token,
+      accessToken,
+      refreshToken,
       user: {
         id: user._id,
         name: user.name,
@@ -128,8 +173,11 @@ export const login = async (req: Request, res: Response) => {
       },
     });
   } catch (error) {
+    console.error("LOGIN ERROR:", error); // 👈 ADD THIS
+
     res.status(500).json({
       message: "Error logging in",
+      error, // 👈 TEMPORARY
     });
   }
 };

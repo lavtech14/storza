@@ -105,7 +105,16 @@ export const createSale = async (req: Request, res: Response) => {
     await sale.save({ session });
 
     await session.commitTransaction();
-    io.emit("saleCreated", sale);
+    const populatedItems = await SaleItem.find({ saleId: sale._id }).populate(
+      "productId",
+    );
+
+    const populatedSale = {
+      ...sale.toObject(),
+      items: populatedItems,
+    };
+
+    io.emit("saleCreated", populatedSale);
     res.status(201).json({
       success: true,
       message: "Sale completed successfully",
@@ -138,18 +147,19 @@ export const getSales = async (req: any, res: Response) => {
     const limit = Number(req.query.limit) || 10;
     const search = req.query.search || "";
 
+    // 🆕 NEW FILTER PARAMS
+    const { type, startDate, endDate } = req.query;
+
     const skip = (page - 1) * limit;
 
-    // Initialize with explicit type
     let saleIds: string[] = [];
     let total = 0;
     let sales = [];
 
-    // If search term exists, check if it matches any product names
+    // 🔍 SEARCH (unchanged)
     if (search && search.toString().trim()) {
       const searchTerm = search.toString().trim();
 
-      // First, find all SaleItems that have products matching the search term
       const matchingItems = await SaleItem.find()
         .populate({
           path: "productId",
@@ -161,26 +171,22 @@ export const getSales = async (req: any, res: Response) => {
         .lean()
         .exec();
 
-      // Filter out items where productId is null (no match)
       const validItems = matchingItems.filter(
         (item: any) => item.productId !== null,
       );
 
-      // Get unique saleIds from matching items and convert to strings
       saleIds = [
         ...new Set(validItems.map((item: any) => item.saleId.toString())),
       ];
-
-      console.log(`Found ${saleIds.length} sales with matching products`);
     }
 
-    // Build filter for sales
+    // 🧠 BASE FILTER
     const filter: any = {
       storeId: new mongoose.Types.ObjectId(storeId),
       isDeleted: { $ne: true },
     };
 
-    // Add search conditions
+    // 🔍 SEARCH CONDITIONS
     if (search && search.toString().trim()) {
       const searchTerm = search.toString().trim();
 
@@ -189,7 +195,6 @@ export const getSales = async (req: any, res: Response) => {
         { invoiceNumber: { $regex: searchTerm, $options: "i" } },
       ];
 
-      // If we found sales with matching products, add them to the OR condition
       if (saleIds.length > 0) {
         filter.$or.push({
           _id: {
@@ -199,12 +204,47 @@ export const getSales = async (req: any, res: Response) => {
       }
     }
 
-    console.log("Final filter:", JSON.stringify(filter));
+    // 🆕 📅 DATE FILTER (IMPORTANT)
+    const now = new Date();
 
-    // Get total count
+    if (type === "daily") {
+      const start = new Date();
+      start.setHours(0, 0, 0, 0);
+
+      filter.createdAt = { $gte: start, $lte: now };
+    }
+
+    if (type === "weekly") {
+      const start = new Date();
+      start.setDate(now.getDate() - 7);
+
+      filter.createdAt = { $gte: start, $lte: now };
+    }
+
+    if (type === "monthly") {
+      const start = new Date(now.getFullYear(), now.getMonth(), 1);
+
+      filter.createdAt = { $gte: start, $lte: now };
+    }
+
+    if (type === "yearly") {
+      const start = new Date(now.getFullYear(), 0, 1);
+
+      filter.createdAt = { $gte: start, $lte: now };
+    }
+
+    // 🧠 CUSTOM DATE (override all)
+    if (startDate && endDate) {
+      filter.createdAt = {
+        $gte: new Date(startDate),
+        $lte: new Date(endDate),
+      };
+    }
+
+    // 📊 COUNT
     total = await Sale.countDocuments(filter);
 
-    // Fetch sales
+    // 📦 FETCH SALES
     sales = await Sale.find(filter)
       .sort({ createdAt: -1 })
       .skip(skip)
@@ -212,9 +252,7 @@ export const getSales = async (req: any, res: Response) => {
       .lean()
       .exec();
 
-    console.log(`Found ${sales.length} sales`);
-
-    // Fetch items for each sale
+    // 📦 FETCH ITEMS
     const salesWithItems = await Promise.all(
       sales.map(async (sale: any) => {
         try {
@@ -261,7 +299,6 @@ export const getSales = async (req: any, res: Response) => {
     });
   } catch (error) {
     console.error("Error in getSales:", error);
-    console.error("Error stack:", error);
 
     res.status(500).json({
       success: false,
@@ -471,5 +508,143 @@ export const deleteSale = async (req: Request, res: Response) => {
     });
   } finally {
     session.endSession();
+  }
+};
+
+export const getSalesReport = async (req: any, res: Response) => {
+  try {
+    const storeId = req.user.storeId;
+    const { type, startDate, endDate } = req.query;
+
+    let match: any = {
+      storeId: new mongoose.Types.ObjectId(storeId),
+      isDeleted: { $ne: true },
+    };
+
+    const now = new Date();
+
+    // 📅 Date Filters
+    if (type === "daily") {
+      const start = new Date();
+      start.setHours(0, 0, 0, 0);
+      match.createdAt = { $gte: start, $lte: now };
+    }
+
+    if (type === "weekly") {
+      const start = new Date();
+      start.setDate(now.getDate() - 7);
+      match.createdAt = { $gte: start, $lte: now };
+    }
+
+    if (type === "monthly") {
+      const start = new Date(now.getFullYear(), now.getMonth(), 1);
+      match.createdAt = { $gte: start, $lte: now };
+    }
+
+    if (type === "yearly") {
+      const start = new Date(now.getFullYear(), 0, 1);
+      match.createdAt = { $gte: start, $lte: now };
+    }
+
+    // 🧠 Custom Range (override)
+    if (startDate && endDate) {
+      match.createdAt = {
+        $gte: new Date(startDate),
+        $lte: new Date(endDate),
+      };
+    }
+
+    // 📊 SUMMARY (cards)
+    const summary = await Sale.aggregate([
+      { $match: match },
+      {
+        $group: {
+          _id: null,
+          totalSales: { $sum: "$totalAmount" },
+          totalGST: { $sum: "$gstAmount" },
+          totalOrders: { $sum: 1 },
+        },
+      },
+    ]);
+
+    // 📈 CHART GROUPING
+    let groupId: any = {};
+
+    if (type === "daily") {
+      groupId = {
+        year: { $year: "$createdAt" },
+        month: { $month: "$createdAt" },
+        day: { $dayOfMonth: "$createdAt" },
+      };
+    } else if (type === "monthly" || type === "weekly") {
+      groupId = {
+        year: { $year: "$createdAt" },
+        month: { $month: "$createdAt" },
+        day: { $dayOfMonth: "$createdAt" }, // good for last 7 days
+      };
+    } else if (type === "yearly") {
+      groupId = {
+        year: { $year: "$createdAt" },
+        month: { $month: "$createdAt" },
+      };
+    } else {
+      // default (custom range → daily)
+      groupId = {
+        year: { $year: "$createdAt" },
+        month: { $month: "$createdAt" },
+        day: { $dayOfMonth: "$createdAt" },
+      };
+    }
+
+    const chart = await Sale.aggregate([
+      { $match: match },
+      {
+        $group: {
+          _id: groupId,
+          total: { $sum: "$totalAmount" },
+        },
+      },
+      {
+        $sort: {
+          "_id.year": 1,
+          "_id.month": 1,
+          "_id.day": 1,
+        },
+      },
+    ]);
+    const sales = await Sale.find(match)
+      .populate("storeId", "name")
+      .sort({ createdAt: -1 });
+
+    // 🎯 FORMAT FOR FRONTEND
+    const formattedChart = chart.map((item) => {
+      const { year, month, day } = item._id;
+
+      return {
+        date: day
+          ? `${year}-${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}`
+          : `${year}-${String(month).padStart(2, "0")}`,
+        total: item.total,
+      };
+    });
+
+    res.status(200).json({
+      success: true,
+      data: {
+        summary: summary[0] || {
+          totalSales: 0,
+          totalGST: 0,
+          totalOrders: 0,
+        },
+        chart: formattedChart,
+        sales,
+      },
+    });
+  } catch (error) {
+    console.error("Report Error:", error);
+    res.status(500).json({
+      success: false,
+      message: "Failed to generate report",
+    });
   }
 };
